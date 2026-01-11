@@ -1,0 +1,45 @@
+name: Moonlight iOS Build
+
+on:
+  workflow_dispatch: # This adds the manual "Run" button
+  push:
+    branches: [ "fix-external-monitor-ipad" ]
+
+jobs:
+  build:
+    runs-on: macos-13 # Uses a Mac runner
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # Crucial: Moonlight uses submodules
+
+      - name: Install dependencies
+        run: |
+          brew install cocoapods
+          pod install --repo-update
+
+      - name: Build Archive
+        run: |
+          xcodebuild -workspace Moonlight.xcworkspace \
+          -scheme Moonlight \
+          -sdk iphoneos \
+          -configuration Release \
+          -archivePath $PWD/build/Moonlight.xcarchive \
+          clean archive \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Create IPA
+        run: |
+          mkdir -p build/Payload
+          mv build/Moonlight.xcarchive/Products/Applications/Moonlight.app build/Payload/
+          cd build
+          zip -r Moonlight.ipa Payload
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moonlight-NoSigning
+          path: build/Moonlight.ipa

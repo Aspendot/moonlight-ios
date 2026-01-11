@@ -1,27 +1,22 @@
 name: Moonlight iOS Build
 
 on:
-  workflow_dispatch: # This adds the manual "Run" button
+  workflow_dispatch:
   push:
     branches: [ "fix-external-monitor-ipad" ]
 
 jobs:
   build:
-    runs-on: macos-15 # Uses a Mac runner
+    runs-on: macos-15
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Crucial: Moonlight uses submodules
-
-      - name: Install dependencies
-        run: |
-          brew install cocoapods
-          pod install --repo-update
+          submodules: recursive
 
       - name: Build Archive
         run: |
-          xcodebuild -workspace Moonlight.xcworkspace \
+          xcodebuild -project Moonlight.xcodeproj \
           -scheme Moonlight \
           -sdk iphoneos \
           -configuration Release \

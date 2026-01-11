@@ -22,3 +22,4 @@ Check out [the Moonlight wiki](https://github.com/moonlight-stream/moonlight-doc
     * In the "Team" dropdown, select your name. If your name doesn't appear, you may need to sign into Xcode with your Apple account.
     * Change the "Bundle Identifier" to something different. You can add your name or some random letters to make it unique.
     * Now you can select your Apple device in the top bar as a target and click the Play button to run.
+ 

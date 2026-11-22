@@ -27,8 +27,12 @@ jobs:
         with:
           submodules: recursive
 
+      # The runner usually has the platform already, and this step has been
+      # seen to fail for reasons of its own. The build will say so if the
+      # platform is really missing.
       - name: Download iOS platform
         run: xcodebuild -downloadPlatform iOS
+        continue-on-error: true
 
       - name: Build for devices without signing
         run: |

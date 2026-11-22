@@ -187,6 +187,7 @@ static inline uint32_t SCReadU32(const uint8_t *p)
     BOOL _ready;
     CFTimeInterval _adoptTime;
     NSMutableSet<NSUUID *> *_ignoredPeripherals;
+    NSString *_lastConnectedSummary;
 
     BOOL _scanning;
     CFTimeInterval _scanDeadline;
@@ -438,12 +439,33 @@ static inline uint32_t SCReadU32(const uint8_t *p)
         return;
     }
 
-    NSArray<CBUUID *> *services = @[ SCUUID(kValveServiceUUID), SCUUID(kDeviceInformationServiceUUID) ];
-    for (CBPeripheral *peripheral in [_central retrieveConnectedPeripheralsWithServices:services]) {
-        if ([self isCandidatePeripheral:peripheral name:peripheral.name]) {
+    // Anything that offers Valve's controller service is a controller, whatever it's called
+    NSArray<CBPeripheral *> *controllers = [_central retrieveConnectedPeripheralsWithServices:@[ SCUUID(kValveServiceUUID) ]];
+    for (CBPeripheral *peripheral in controllers) {
+        if (![_ignoredPeripherals containsObject:peripheral.identifier]) {
             [self adoptPeripheral:peripheral how:@"already connected to this device"];
             return;
         }
+    }
+
+    // iOS doesn't always know about a peripheral's vendor services before an
+    // app has looked at them. SDL finds controllers by asking for a service
+    // that everything has and going by the name, so do that too.
+    NSArray<CBPeripheral *> *others = [_central retrieveConnectedPeripheralsWithServices:@[ SCUUID(kDeviceInformationServiceUUID) ]];
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (CBPeripheral *peripheral in others) {
+        if ([self isCandidatePeripheral:peripheral name:peripheral.name]) {
+            [self adoptPeripheral:peripheral how:@"already connected to this device, found by name"];
+            return;
+        }
+        [names addObject:peripheral.name != nil ? peripheral.name : @"(unnamed)"];
+    }
+
+    // If the controller is connected under a name we don't expect, this is how we find out
+    NSString *summary = [names componentsJoinedByString:@", "];
+    if (![summary isEqualToString:_lastConnectedSummary]) {
+        _lastConnectedSummary = summary;
+        SCLog(@"no controller among connected Bluetooth LE devices: %@", summary.length > 0 ? summary : @"(none)");
     }
 }
 
@@ -587,6 +609,11 @@ static inline uint32_t SCReadU32(const uint8_t *p)
     }
 
     if (!_ready) {
+        if (_inputCharacteristic != nil && _inputCharacteristic.isNotifying) {
+            // We're subscribed, so all that's missing is the first report
+            return;
+        }
+
         if (_inputCharacteristic != nil && _peripheral.state == CBPeripheralStateConnected) {
             // Subscribing quietly fails until the user accepts the pairing
             // request, and CoreBluetooth doesn't tell us when they do.
@@ -594,7 +621,7 @@ static inline uint32_t SCReadU32(const uint8_t *p)
         }
 
         if (now - _adoptTime > kConnectTimeout) {
-            SCLog(@"no input after %d seconds; starting over", (int)kConnectTimeout);
+            SCLog(@"couldn't set the controller up in %d seconds; starting over", (int)kConnectTimeout);
             [self dropPeripheralAndCancelConnection:YES];
         }
         return;
@@ -1020,6 +1047,10 @@ static inline uint32_t SCReadU32(const uint8_t *p)
     else if (!_loggedNotifyState) {
         _loggedNotifyState = YES;
         SCLog(@"subscribed to input (notifying: %d)", characteristic.isNotifying ? 1 : 0);
+
+        if (!_ready && characteristic.isNotifying) {
+            [self setStatus:@"subscribed, waiting for the first input report"];
+        }
     }
 }
 

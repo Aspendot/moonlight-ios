@@ -1,0 +1,64 @@
+name: Unsigned IPA
+
+# Builds an unsigned iOS app that can be installed with a sideloading tool,
+# which signs it with the user's own Apple ID.
+
+on:
+  push:
+    branches:
+      - steam-controller
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Download iOS platform
+        run: xcodebuild -downloadPlatform iOS
+
+      - name: Build for devices without signing
+        run: |
+          xcodebuild -project Moonlight.xcodeproj -scheme Moonlight -configuration Release \
+            -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            clean build
+
+      - name: Package IPA
+        run: |
+          APP="build/Build/Products/Release-iphoneos/Moonlight.app"
+          PLIST="$APP/Info.plist"
+
+          # A different identifier and name let this build sit next to the
+          # App Store version of Moonlight
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.moonlight-steamcontroller" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Moonlight SC" "$PLIST"
+
+          # Makes Documents/steam-controller-log.txt visible in the Files app
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
+
+          mkdir -p ipa/Payload
+          cp -R "$APP" ipa/Payload/
+          (cd ipa && zip -qry ../Moonlight-SteamController.ipa Payload)
+          ls -l Moonlight-SteamController.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: Moonlight-SteamController
+          path: Moonlight-SteamController.ipa
+          if-no-files-found: error

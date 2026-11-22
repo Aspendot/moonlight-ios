@@ -16,6 +16,8 @@
 		9819CC22254F180F008A7C8E /* AbsoluteTouchHandler.m in Sources */ = {isa = PBXBuildFile; fileRef = 9819CC21254F180F008A7C8E /* AbsoluteTouchHandler.m */; };
 		9827E7A32514366900F25707 /* HapticContext.m in Sources */ = {isa = PBXBuildFile; fileRef = 9827E7A22514366900F25707 /* HapticContext.m */; };
 		9827E7A42514366900F25707 /* HapticContext.m in Sources */ = {isa = PBXBuildFile; fileRef = 9827E7A22514366900F25707 /* HapticContext.m */; };
+		5CA7E0032F10000000C0FFEE /* SteamController.m in Sources */ = {isa = PBXBuildFile; fileRef = 5CA7E0012F10000000C0FFEE /* SteamController.m */; };
+		5CA7E0042F10000000C0FFEE /* SteamController.m in Sources */ = {isa = PBXBuildFile; fileRef = 5CA7E0012F10000000C0FFEE /* SteamController.m */; };
 		9832D1361BBCD5C50036EF48 /* TemporaryApp.m in Sources */ = {isa = PBXBuildFile; fileRef = 9832D1351BBCD5C50036EF48 /* TemporaryApp.m */; };
 		9865DC30213260B40005B9B9 /* libmoonlight-common-tv.a in Frameworks */ = {isa = PBXBuildFile; fileRef = FB1A68152132509400507771 /* libmoonlight-common-tv.a */; };
 		9865DC31213260F10005B9B9 /* mkcert.c in Sources */ = {isa = PBXBuildFile; fileRef = FB89460719F646E200339C8A /* mkcert.c */; };
@@ -184,6 +186,8 @@
 		9819CC25254F2734008A7C8E /* Moonlight v1.6.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "Moonlight v1.6.xcdatamodel"; sourceTree = "<group>"; };
 		9827E7A22514366900F25707 /* HapticContext.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = HapticContext.m; sourceTree = "<group>"; };
 		9827E7A7251436EA00F25707 /* HapticContext.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HapticContext.h; sourceTree = "<group>"; };
+		5CA7E0012F10000000C0FFEE /* SteamController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SteamController.m; sourceTree = "<group>"; };
+		5CA7E0022F10000000C0FFEE /* SteamController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SteamController.h; sourceTree = "<group>"; };
 		9832D1341BBCD5C50036EF48 /* TemporaryApp.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = TemporaryApp.h; path = Database/TemporaryApp.h; sourceTree = "<group>"; };
 		9832D1351BBCD5C50036EF48 /* TemporaryApp.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = TemporaryApp.m; path = Database/TemporaryApp.m; sourceTree = "<group>"; };
 		984CD023288A310D0097D2D4 /* Moonlight v1.8.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "Moonlight v1.8.xcdatamodel"; sourceTree = "<group>"; };
@@ -513,6 +517,8 @@
 				9897B6A32212610800966419 /* Controller.h */,
 				9827E7A22514366900F25707 /* HapticContext.m */,
 				9827E7A7251436EA00F25707 /* HapticContext.h */,
+				5CA7E0012F10000000C0FFEE /* SteamController.m */,
+				5CA7E0022F10000000C0FFEE /* SteamController.h */,
 				9819CC12254F107A008A7C8E /* RelativeTouchHandler.h */,
 				9819CC13254F107A008A7C8E /* RelativeTouchHandler.m */,
 				9819CC20254F180F008A7C8E /* AbsoluteTouchHandler.h */,
@@ -833,6 +839,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9827E7A42514366900F25707 /* HapticContext.m in Sources */,
+				5CA7E0042F10000000C0FFEE /* SteamController.m in Sources */,
 				9897B6A62212732C00966419 /* Controller.m in Sources */,
 				9865DC3E21332D660005B9B9 /* MainFrameViewController.m in Sources */,
 				9865DC36213287F30005B9B9 /* AppDelegate.m in Sources */,
@@ -916,6 +923,7 @@
 				FB1D599A1BBCCD7E00F482CA /* AppCollectionView.m in Sources */,
 				FB89463619F646E200339C8A /* StreamFrameViewController.m in Sources */,
 				9827E7A32514366900F25707 /* HapticContext.m in Sources */,
+				5CA7E0032F10000000C0FFEE /* SteamController.m in Sources */,
 				9832D1361BBCD5C50036EF48 /* TemporaryApp.m in Sources */,
 				98D585701C0ED0E800F6CC00 /* TemporarySettings.m in Sources */,
 				FB89462819F646E200339C8A /* CryptoManager.m in Sources */,

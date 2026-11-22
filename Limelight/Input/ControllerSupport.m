@@ -8,16 +8,36 @@
 
 #import "ControllerSupport.h"
 #import "Controller.h"
+#import "SteamController.h"
 
 #import "OnScreenControls.h"
 
 #import "DataManager.h"
 #include "Limelight.h"
 
+#import <QuartzCore/QuartzCore.h>
+
 @import GameController;
 @import AudioToolbox;
 
 static const double MOUSE_SPEED_DIVISOR = 1.25;
+
+// Every button a Steam Controller can report to the host
+#define STEAM_CONTROLLER_BUTTON_FLAGS \
+    (A_FLAG | B_FLAG | X_FLAG | Y_FLAG | UP_FLAG | DOWN_FLAG | LEFT_FLAG | RIGHT_FLAG | \
+     LB_FLAG | RB_FLAG | PLAY_FLAG | BACK_FLAG | LS_CLK_FLAG | RS_CLK_FLAG | SPECIAL_FLAG | \
+     PADDLE1_FLAG | PADDLE2_FLAG | PADDLE3_FLAG | PADDLE4_FLAG | TOUCHPAD_FLAG | MISC_FLAG)
+
+@interface ControllerSupport () <SteamControllerDelegate>
+
+// Set on the main queue and read on the Steam Controller's Bluetooth queue
+@property (atomic, strong) Controller* steamController;
+
+// Set on the connection thread and read on the Steam Controller's Bluetooth queue
+@property (atomic) uint16_t steamAccelRateHz;
+@property (atomic) uint16_t steamGyroRateHz;
+
+@end
 
 @implementation ControllerSupport {
     id _controllerConnectObserver;
@@ -46,6 +66,26 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     char _controllerNumbers;
     bool _multiController;
     bool _swapABXYButtons;
+
+    // Main queue only
+    BOOL _cleanedUp;
+
+    // What we last sent for the Steam Controller. Only touched on its Bluetooth queue.
+    Controller *_steamStateOwner;
+    BOOL _steamHasSentState;
+    BOOL _steamExitLatched;
+    int _steamButtonFlags;
+    unsigned char _steamLeftTrigger;
+    unsigned char _steamRightTrigger;
+    short _steamLeftStickX;
+    short _steamLeftStickY;
+    short _steamRightStickX;
+    short _steamRightStickY;
+    BOOL _steamPadDown[2];
+    float _steamPadX[2];
+    float _steamPadY[2];
+    CFTimeInterval _steamLastAccelTime;
+    CFTimeInterval _steamLastGyroTime;
 }
 
 // UPDATE_BUTTON_FLAG(controller, flag, pressed)
@@ -65,6 +105,11 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
         return;
     }
     
+    if (controller.isSteamController) {
+        [[SteamControllerManager sharedManager] setRumbleLowFrequency:lowFreqMotor highFrequency:highFreqMotor];
+        return;
+    }
+
     [controller.lowFreqMotor setMotorAmplitude:lowFreqMotor];
     [controller.highFreqMotor setMotorAmplitude:highFreqMotor];
 }
@@ -93,6 +138,11 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
             return;
         }
         
+        if (controller.isSteamController) {
+            [self setSteamMotionEventState:motionType reportRateHz:reportRateHz];
+            return;
+        }
+
         if (controller.gamepad.motion == nil) {
             // No motion supported for this controller
             return;
@@ -478,17 +528,34 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 
 -(BOOL) reportControllerArrival:(Controller*) limeController
 {
+    // Steam Controller input arrives off the main queue, so two threads
+    // can find themselves reporting the same arrival
+    @synchronized(limeController) {
+        return [self reportControllerArrivalLocked:limeController];
+    }
+}
+
+-(BOOL) reportControllerArrivalLocked:(Controller*) limeController
+{
     // Only report arrival once
     if (limeController.reportedArrival) {
         return YES;
     }
-    
+
     uint8_t type = LI_CTYPE_UNKNOWN;
     uint16_t capabilities = 0;
     uint32_t supportedButtonFlags = 0;
-    
+
     GCController *controller = limeController.gamepad;
-    if (controller) {
+    if (limeController.isSteamController) {
+        // This is a Steam Controller that we read over Bluetooth ourselves.
+        // We describe it to the host the same way moonlight-qt does.
+        type = LI_CTYPE_STEAM;
+        capabilities = LI_CCAP_ANALOG_TRIGGERS | LI_CCAP_RUMBLE | LI_CCAP_TOUCHPAD |
+            LI_CCAP_DUAL_TOUCHPAD | LI_CCAP_ACCEL | LI_CCAP_GYRO;
+        supportedButtonFlags = STEAM_CONTROLLER_BUTTON_FLAGS;
+    }
+    else if (controller) {
         // This is a physical controller with a corresponding GCController object
         
         // Start is always present
@@ -621,7 +688,7 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     // Report the new controller to the host
     // NB: This will fail if the connection hasn't been fully established yet
     // and we will try again later.
-    if (LiSendControllerArrivalEvent(controller.playerIndex,
+    if (LiSendControllerArrivalEvent(limeController.playerIndex,
                                      [self getActiveGamepadMask],
                                      type,
                                      supportedButtonFlags,
@@ -950,6 +1017,11 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
         }
     }
     
+    // A Steam Controller has every button the on-screen controls offer
+    if (self.steamController != nil) {
+        level = OnScreenControlsLevelOff;
+    }
+
     // If we didn't find a gamepad present and we have a keyboard or mouse, turn
     // the on-screen controls off to get the overlays out of the way.
     if (level == OnScreenControlsLevelFull && [ControllerSupport hasKeyboardOrMouse]) {
@@ -1047,6 +1119,11 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
                 mask |= 1 << i++;
             }
         }
+
+        // Steam Controllers are handled outside the GameController framework
+        if ([SteamControllerManager sharedManager].controllerReady) {
+            mask |= 1 << i++;
+        }
     }
     else {
         // Some games don't deal with having controller reconnected
@@ -1107,6 +1184,27 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
         for (GCMouse* mouse in [GCMouse mice]) {
             [self registerMouseCallbacks:mouse];
         }
+    }
+
+    // Steam Controllers aren't visible to the GameController framework,
+    // so we talk to them ourselves over Bluetooth LE
+    SteamControllerManager* steamManager = [SteamControllerManager sharedManager];
+    steamManager.delegate = self;
+    [steamManager start];
+    [steamManager setSessionActive:YES];
+
+    if (steamManager.controllerReady) {
+        // Note: We cannot report controller arrival to the host here,
+        // because the connection has not been established yet.
+        [self attachSteamController];
+    }
+    else if ([SteamControllerManager controllerSeenBefore]) {
+        // Say why if a controller that has worked before doesn't show up
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!self->_cleanedUp && self.steamController == nil) {
+                [self->_delegate controllerNotice:[SteamControllerManager sharedManager].statusDescription];
+            }
+        });
     }
     
     _controllerConnectObserver = [[NSNotificationCenter defaultCenter] addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
@@ -1233,6 +1331,16 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 
 -(void) cleanup
 {
+    _cleanedUp = YES;
+
+    // Let the Steam Controller go back to its keyboard and mouse emulation
+    SteamControllerManager* steamManager = [SteamControllerManager sharedManager];
+    if (steamManager.delegate == self) {
+        steamManager.delegate = nil;
+    }
+    [steamManager setSessionActive:NO];
+    self.steamController = nil;
+
     [[NSNotificationCenter defaultCenter] removeObserver:_controllerConnectObserver];
     [[NSNotificationCenter defaultCenter] removeObserver:_controllerDisconnectObserver];
     [[NSNotificationCenter defaultCenter] removeObserver:_mouseConnectObserver];
@@ -1265,6 +1373,329 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     if (@available(iOS 14.0, tvOS 14.0, *)) {
         for (GCMouse* mouse in [GCMouse mice]) {
             [self unregisterMouseCallbacks:mouse];
+        }
+    }
+}
+
+#pragma mark - Steam Controller
+
+-(NSString*) getSteamControllerStatus
+{
+    return [SteamControllerManager sharedManager].statusDescription;
+}
+
+// Main queue
+-(void) attachSteamController
+{
+    if (_cleanedUp || self.steamController != nil) {
+        return;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        if (!(_controllerNumbers & (1 << i))) {
+            _controllerNumbers |= (1 << i);
+
+            Controller* limeController = [[Controller alloc] init];
+            limeController.playerIndex = i;
+            limeController.isSteamController = YES;
+
+            // It has physical Select and Guide buttons, so no button combos are needed
+            limeController.supportedEmulationFlags = 0;
+
+            // Player 0 shares state with the OSC
+            if (i == 0) {
+                limeController.mergedWithController = _oscController;
+                _oscController.mergedWithController = limeController;
+            }
+
+            [_controllers setObject:limeController forKey:[NSNumber numberWithInteger:i]];
+
+            Log(LOG_I, @"Assigning Steam Controller to index: %d", i);
+
+            // Input starts flowing to the host as soon as this is set
+            self.steamController = limeController;
+
+            // Report the controller arrival to the host if we're connected
+            [self reportControllerArrival:limeController];
+
+            // Re-evaluate the on-screen control mode
+            [self updateAutoOnScreenControlMode];
+
+            // Notify the delegate
+            [_delegate gamepadPresenceChanged];
+            [_delegate controllerNotice:@"Steam Controller connected"];
+            return;
+        }
+    }
+
+    Log(LOG_W, @"No free controller index for the Steam Controller");
+}
+
+// Main queue
+-(void) detachSteamController
+{
+    Controller* limeController = self.steamController;
+    if (limeController == nil) {
+        return;
+    }
+
+    // Stop forwarding input before telling the host that the controller is gone
+    self.steamController = nil;
+
+    _controllerNumbers &= ~(1 << limeController.playerIndex);
+    Log(LOG_I, @"Unassigning Steam Controller index: %d", limeController.playerIndex);
+
+    // Disassociate this controller from any controllers merged with it
+    if (limeController.mergedWithController.mergedWithController == limeController) {
+        limeController.mergedWithController.mergedWithController = nil;
+    }
+    limeController.mergedWithController = nil;
+
+    @synchronized(limeController) {
+        limeController.lastButtonFlags = 0;
+        limeController.lastLeftTrigger = 0;
+        limeController.lastRightTrigger = 0;
+        limeController.lastLeftStickX = 0;
+        limeController.lastLeftStickY = 0;
+        limeController.lastRightStickX = 0;
+        limeController.lastRightStickY = 0;
+    }
+
+    // Inform the server of the updated active gamepads before removing this controller
+    [self updateFinished:limeController];
+    [_controllers removeObjectForKey:[NSNumber numberWithInteger:limeController.playerIndex]];
+
+    // Re-evaluate the on-screen control mode
+    [self updateAutoOnScreenControlMode];
+
+    // Notify the delegate
+    [_delegate gamepadPresenceChanged];
+    [_delegate controllerNotice:@"Steam Controller disconnected"];
+}
+
+// Connection thread
+-(void) setSteamMotionEventState:(uint8_t)motionType reportRateHz:(uint16_t)reportRateHz
+{
+    switch (motionType) {
+        case LI_MOTION_TYPE_ACCEL:
+            self.steamAccelRateHz = reportRateHz;
+            break;
+
+        case LI_MOTION_TYPE_GYRO:
+            self.steamGyroRateHz = reportRateHz;
+            break;
+    }
+
+    // The controller only produces motion samples while somebody wants them
+    BOOL motionWanted = self.steamAccelRateHz != 0 || self.steamGyroRateHz != 0;
+    [[SteamControllerManager sharedManager] setMotionSensorsEnabled:motionWanted];
+}
+
+// Steam Controller Bluetooth queue
+-(void) steamControllerDidBecomeReady:(SteamControllerManager *)manager
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self attachSteamController];
+    });
+}
+
+// Steam Controller Bluetooth queue
+-(void) steamControllerDidDisconnect:(SteamControllerManager *)manager
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self detachSteamController];
+    });
+}
+
+// Steam Controller Bluetooth queue
+-(void) updateSteamPad:(int)pad
+               touched:(BOOL)touched
+                  rawX:(int16_t)rawX
+                  rawY:(int16_t)rawY
+           rawPressure:(uint16_t)rawPressure
+      controllerNumber:(uint8_t)controllerNumber
+{
+    if (!touched && !_steamPadDown[pad]) {
+        return;
+    }
+
+    // Each pad is its own touchpad with a single finger. We give the two
+    // fingers different IDs so that a host which emulates a controller with
+    // only one touchpad still sees two separate touches.
+    uint8_t touchpadIndex = (uint8_t)pad;
+    uint32_t pointerId = (uint32_t)pad;
+
+    if (touched) {
+        // Pad coordinates are centered on zero with Y pointing up
+        float x = rawX / 65536.0f + 0.5f;
+        float y = -rawY / 65536.0f + 0.5f;
+        float pressure = MIN(MAX(rawPressure / 32768.0f, 0.01f), 1.0f);
+
+        if (!_steamPadDown[pad]) {
+            LiSendControllerTouchEvent2(controllerNumber, LI_TOUCH_EVENT_DOWN, touchpadIndex, pointerId, x, y, pressure);
+        }
+        else if (x != _steamPadX[pad] || y != _steamPadY[pad]) {
+            LiSendControllerTouchEvent2(controllerNumber, LI_TOUCH_EVENT_MOVE, touchpadIndex, pointerId, x, y, pressure);
+        }
+
+        _steamPadX[pad] = x;
+        _steamPadY[pad] = y;
+    }
+    else {
+        LiSendControllerTouchEvent2(controllerNumber, LI_TOUCH_EVENT_UP, touchpadIndex, pointerId, _steamPadX[pad], _steamPadY[pad], 0.0f);
+    }
+
+    _steamPadDown[pad] = touched;
+}
+
+// Steam Controller Bluetooth queue
+-(void) steamController:(SteamControllerManager *)manager didUpdateState:(const SteamControllerState *)state
+{
+    Controller* limeController = self.steamController;
+    if (limeController == nil) {
+        return;
+    }
+
+    if (limeController != _steamStateOwner) {
+        // This is a new connection, so forget what we sent for the last one
+        _steamStateOwner = limeController;
+        _steamHasSentState = NO;
+        _steamExitLatched = NO;
+        _steamPadDown[0] = NO;
+        _steamPadDown[1] = NO;
+        _steamLastAccelTime = 0;
+        _steamLastGyroTime = 0;
+    }
+
+    uint32_t buttons = state->buttons;
+    int buttonFlags = 0;
+
+    if (buttons & SteamControllerButtonA) buttonFlags |= _swapABXYButtons ? B_FLAG : A_FLAG;
+    if (buttons & SteamControllerButtonB) buttonFlags |= _swapABXYButtons ? A_FLAG : B_FLAG;
+    if (buttons & SteamControllerButtonX) buttonFlags |= _swapABXYButtons ? Y_FLAG : X_FLAG;
+    if (buttons & SteamControllerButtonY) buttonFlags |= _swapABXYButtons ? X_FLAG : Y_FLAG;
+
+    if (buttons & SteamControllerButtonDpadUp) buttonFlags |= UP_FLAG;
+    if (buttons & SteamControllerButtonDpadDown) buttonFlags |= DOWN_FLAG;
+    if (buttons & SteamControllerButtonDpadLeft) buttonFlags |= LEFT_FLAG;
+    if (buttons & SteamControllerButtonDpadRight) buttonFlags |= RIGHT_FLAG;
+
+    if (buttons & SteamControllerButtonLeftBumper) buttonFlags |= LB_FLAG;
+    if (buttons & SteamControllerButtonRightBumper) buttonFlags |= RB_FLAG;
+    if (buttons & SteamControllerButtonLeftStick) buttonFlags |= LS_CLK_FLAG;
+    if (buttons & SteamControllerButtonRightStick) buttonFlags |= RS_CLK_FLAG;
+
+    if (buttons & SteamControllerButtonView) buttonFlags |= PLAY_FLAG;
+    if (buttons & SteamControllerButtonMenu) buttonFlags |= BACK_FLAG;
+    if (buttons & SteamControllerButtonSteam) buttonFlags |= SPECIAL_FLAG;
+    if (buttons & SteamControllerButtonQuickAccess) buttonFlags |= MISC_FLAG;
+
+    // The back grips use SDL's paddle order: upper right, upper left, lower right, lower left
+    if (buttons & SteamControllerButtonR4) buttonFlags |= PADDLE1_FLAG;
+    if (buttons & SteamControllerButtonL4) buttonFlags |= PADDLE2_FLAG;
+    if (buttons & SteamControllerButtonR5) buttonFlags |= PADDLE3_FLAG;
+    if (buttons & SteamControllerButtonL5) buttonFlags |= PADDLE4_FLAG;
+
+    if (buttons & (SteamControllerButtonLeftPadClick | SteamControllerButtonRightPadClick)) buttonFlags |= TOUCHPAD_FLAG;
+
+    // updateFinished: ends the stream when it sees Start+Select+L1+R1. Feed it
+    // that combo once per press, or every report sent while the buttons are
+    // held would end the stream again.
+    const int exitComboFlags = PLAY_FLAG | BACK_FLAG | LB_FLAG | RB_FLAG;
+    if (_steamExitLatched) {
+        if (buttonFlags & exitComboFlags) {
+            return;
+        }
+        _steamExitLatched = NO;
+    }
+    if (buttonFlags == exitComboFlags) {
+        _steamExitLatched = YES;
+    }
+
+    // Triggers report 0 to 32767 and the host takes 0 to 255
+    unsigned char leftTrigger = (unsigned char)(MAX(state->leftTrigger, 0) >> 7);
+    unsigned char rightTrigger = (unsigned char)(MAX(state->rightTrigger, 0) >> 7);
+
+    // Sticks already use the host's range and directions
+    short leftStickX = state->leftStickX;
+    short leftStickY = state->leftStickY;
+    short rightStickX = state->rightStickX;
+    short rightStickY = state->rightStickY;
+
+    if (!_steamHasSentState ||
+        buttonFlags != _steamButtonFlags ||
+        leftTrigger != _steamLeftTrigger || rightTrigger != _steamRightTrigger ||
+        leftStickX != _steamLeftStickX || leftStickY != _steamLeftStickY ||
+        rightStickX != _steamRightStickX || rightStickY != _steamRightStickY) {
+        _steamHasSentState = YES;
+        _steamButtonFlags = buttonFlags;
+        _steamLeftTrigger = leftTrigger;
+        _steamRightTrigger = rightTrigger;
+        _steamLeftStickX = leftStickX;
+        _steamLeftStickY = leftStickY;
+        _steamRightStickX = rightStickX;
+        _steamRightStickY = rightStickY;
+
+        @synchronized(limeController) {
+            limeController.lastButtonFlags = buttonFlags;
+            limeController.lastLeftTrigger = leftTrigger;
+            limeController.lastRightTrigger = rightTrigger;
+            limeController.lastLeftStickX = leftStickX;
+            limeController.lastLeftStickY = leftStickY;
+            limeController.lastRightStickX = rightStickX;
+            limeController.lastRightStickY = rightStickY;
+        }
+
+        [self updateFinished:limeController];
+    }
+
+    // The host can't use touchpad or motion events until it knows about the controller
+    if (!limeController.reportedArrival) {
+        return;
+    }
+
+    uint8_t controllerNumber = (uint8_t)(_multiController ? limeController.playerIndex : 0);
+
+    [self updateSteamPad:0
+                 touched:(buttons & SteamControllerButtonLeftPadTouch) != 0
+                    rawX:state->leftPadX
+                    rawY:state->leftPadY
+             rawPressure:state->leftPadPressure
+        controllerNumber:controllerNumber];
+    [self updateSteamPad:1
+                 touched:(buttons & SteamControllerButtonRightPadTouch) != 0
+                    rawX:state->rightPadX
+                    rawY:state->rightPadY
+             rawPressure:state->rightPadPressure
+        controllerNumber:controllerNumber];
+
+    if (state->hasMotionSample) {
+        CFTimeInterval now = CACurrentMediaTime();
+        uint16_t accelRateHz = self.steamAccelRateHz;
+        uint16_t gyroRateHz = self.steamGyroRateHz;
+
+        // The host expects SDL's sensor axes, which are the controller's
+        // own axes with Y and Z exchanged and the new Z negated
+        if (accelRateHz != 0 && now - _steamLastAccelTime >= 0.9 / accelRateHz) {
+            const float metersPerSecondSquared = 9.80665f / STEAM_CONTROLLER_ACCEL_UNITS_PER_G;
+
+            _steamLastAccelTime = now;
+            LiSendControllerMotionEvent(controllerNumber,
+                                        LI_MOTION_TYPE_ACCEL,
+                                        state->accelX * metersPerSecondSquared,
+                                        state->accelZ * metersPerSecondSquared,
+                                        -state->accelY * metersPerSecondSquared);
+        }
+
+        if (gyroRateHz != 0 && now - _steamLastGyroTime >= 0.9 / gyroRateHz) {
+            const float degreesPerSecond = 1.0f / STEAM_CONTROLLER_GYRO_UNITS_PER_DPS;
+
+            _steamLastGyroTime = now;
+            LiSendControllerMotionEvent(controllerNumber,
+                                        LI_MOTION_TYPE_GYRO,
+                                        state->gyroX * degreesPerSecond,
+                                        state->gyroZ * degreesPerSecond,
+                                        -state->gyroY * degreesPerSecond);
         }
     }
 }

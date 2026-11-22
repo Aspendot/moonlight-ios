@@ -26,6 +26,7 @@
 #import "TemporaryApp.h"
 #import "IdManager.h"
 #import "ConnectionHelper.h"
+#import "SteamController.h"
 
 #if !TARGET_OS_TV
 #import "SettingsViewController.h"
@@ -922,6 +923,13 @@ static NSMutableSet* hostList;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+
+    // If we already have Bluetooth permission, start looking for a Steam
+    // Controller now so it's ready before the first stream begins. If not,
+    // the permission prompt waits until a stream is started.
+    if ([SteamControllerManager isBluetoothAuthorized]) {
+        [[SteamControllerManager sharedManager] start];
+    }
         
 #if !TARGET_OS_TV
     // Set the side bar button action. When it's tapped, it'll show the sidebar.

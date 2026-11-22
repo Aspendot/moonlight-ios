@@ -50,4 +50,7 @@ typedef struct {
 @property (nonatomic)                   BOOL reportedArrival;
 @property (nonatomic)                   Controller* _Nullable mergedWithController;
 
+// Steam Controllers have no GCController. Their input comes from SteamControllerManager.
+@property (nonatomic)                   BOOL isSteamController;
+
 @end

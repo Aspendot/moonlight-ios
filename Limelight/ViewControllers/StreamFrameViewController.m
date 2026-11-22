@@ -255,7 +255,12 @@
 
 - (void)updateStatsOverlay {
     NSString* overlayText = [self->_streamMan getStatsOverlayText];
-    
+
+    // Show the state of the Steam Controller driver along with the stream stats
+    if (overlayText != nil) {
+        overlayText = [NSString stringWithFormat:@"%@\n%@", overlayText, [self->_controllerSupport getSteamControllerStatus]];
+    }
+
     dispatch_async(dispatch_get_main_queue(), ^{
         [self updateOverlayText:overlayText];
     });
@@ -649,8 +654,29 @@
 
 - (void) streamExitRequested {
     Log(LOG_I, @"Gamepad combo requested stream exit");
-    
+
     [self returnToMainFrame];
+}
+
+- (void) controllerNotice:(NSString*)message {
+    Log(LOG_I, @"Controller notice: %@", message);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // The stats overlay already shows the controller state
+        if (self->_settings.statsOverlay) {
+            return;
+        }
+
+        [self updateOverlayText:message];
+
+        // Take the notice down again after a few seconds, unless
+        // something else has replaced it in the meantime
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([self->_overlayView.text isEqualToString:message]) {
+                [self updateOverlayText:nil];
+            }
+        });
+    });
 }
 
 - (void)userInteractionBegan {

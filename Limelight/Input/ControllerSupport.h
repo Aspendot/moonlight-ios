@@ -17,6 +17,9 @@
 - (void) mousePresenceChanged;
 - (void) streamExitRequested;
 
+// A short message about a controller that the user should see
+- (void) controllerNotice:(NSString*)message;
+
 @end
 
 @interface ControllerSupport : NSObject
@@ -49,5 +52,8 @@
 +(int) getConnectedGamepadMask:(StreamConfiguration*)streamConfig;
 
 -(NSUInteger) getConnectedGamepadCount;
+
+// One-line connection state of the Bluetooth Steam Controller driver
+-(NSString*) getSteamControllerStatus;
 
 @end

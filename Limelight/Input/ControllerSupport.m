@@ -1381,7 +1381,19 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 
 -(NSString*) getSteamControllerStatus
 {
-    return [SteamControllerManager sharedManager].statusDescription;
+    SteamControllerManager* steamManager = [SteamControllerManager sharedManager];
+    NSString* status = steamManager.statusDescription;
+
+    // While the controller isn't working, also show what the driver has been
+    // doing. A screenshot of this is the only log a user can easily share.
+    if (!steamManager.controllerReady) {
+        NSString* recentLog = [steamManager recentLogWithLineLimit:8];
+        if (recentLog.length > 0) {
+            status = [NSString stringWithFormat:@"%@\n%@", status, recentLog];
+        }
+    }
+
+    return status;
 }
 
 // Main queue

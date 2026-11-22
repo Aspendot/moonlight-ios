@@ -29,12 +29,12 @@ static NSString * const kRumbleCharacteristicUUID      = @"100F6CB5-1735-4313-B4
 static NSString * const kDeviceInformationServiceUUID  = @"180A";
 
 static NSString * const kSeenDefaultsKey = @"steamControllerSeen";
-static NSString * const kLogFileName = @"steam-controller-log.txt";
 
 enum {
     kInputReportLength   = 45,
     kFeatureReportLength = 64,
     kRumblePayloadLength = 9,
+    kRecentLogLineLimit  = 40,
 
     kInputReport45 = 0x45,
     kInputReport47 = 0x47,
@@ -59,13 +59,12 @@ static const uint64_t kRumbleResendIntervalMs = 40;
 
 static const CFTimeInterval kScanDuration = 20.0;
 static const CFTimeInterval kConnectTimeout = 30.0;
-static const unsigned long long kMaxLogFileSize = 512 * 1024;
 
 #pragma mark - Logging
 
-static NSFileHandle *sLogHandle;
-static NSDateFormatter *sLogDateFormatter;
-static BOOL sLogOpenAttempted;
+// Only touched on the log queue
+static NSMutableArray<NSString *> *sRecentLogLines;
+static NSDateFormatter *sLogTimeFormatter;
 
 static dispatch_queue_t SCLogQueue(void)
 {
@@ -79,8 +78,9 @@ static dispatch_queue_t SCLogQueue(void)
 
 static void SCLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
-// Logs to the regular Moonlight log and to a text file in the Documents folder,
-// which is the only log a user can get at without a Mac.
+// Logs to the regular Moonlight log and keeps the most recent lines in memory,
+// so that they can be put on screen. That is the only way to see what the
+// driver did on a device that isn't attached to a Mac.
 static void SCLog(NSString *format, ...)
 {
     va_list args;
@@ -92,41 +92,35 @@ static void SCLog(NSString *format, ...)
 
     NSDate *now = [NSDate date];
     dispatch_async(SCLogQueue(), ^{
-        if (!sLogOpenAttempted) {
-            sLogOpenAttempted = YES;
+        if (sRecentLogLines == nil) {
+            sRecentLogLines = [[NSMutableArray alloc] init];
 
-            sLogDateFormatter = [[NSDateFormatter alloc] init];
-            sLogDateFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-            sLogDateFormatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
-
-            NSString *directory = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            if (directory != nil) {
-                NSString *path = [directory stringByAppendingPathComponent:kLogFileName];
-                NSFileManager *fileManager = [NSFileManager defaultManager];
-
-                // Start over when the log gets large
-                NSDictionary<NSFileAttributeKey, id> *attributes = [fileManager attributesOfItemAtPath:path error:nil];
-                if (attributes != nil && [attributes fileSize] > kMaxLogFileSize) {
-                    [fileManager removeItemAtPath:path error:nil];
-                }
-                if (![fileManager fileExistsAtPath:path]) {
-                    [fileManager createFileAtPath:path contents:nil attributes:nil];
-                }
-
-                sLogHandle = [NSFileHandle fileHandleForWritingAtPath:path];
-                if (sLogHandle != nil && ![sLogHandle seekToEndReturningOffset:NULL error:NULL]) {
-                    sLogHandle = nil;
-                }
-            }
+            sLogTimeFormatter = [[NSDateFormatter alloc] init];
+            sLogTimeFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+            sLogTimeFormatter.dateFormat = @"HH:mm:ss";
         }
 
-        if (sLogHandle != nil) {
-            NSString *line = [NSString stringWithFormat:@"%@ %@\n", [sLogDateFormatter stringFromDate:now], message];
-            if (![sLogHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding] error:NULL]) {
-                sLogHandle = nil;
-            }
+        [sRecentLogLines addObject:[NSString stringWithFormat:@"%@ %@", [sLogTimeFormatter stringFromDate:now], message]];
+        if (sRecentLogLines.count > kRecentLogLineLimit) {
+            [sRecentLogLines removeObjectAtIndex:0];
         }
     });
+}
+
+static NSString *SCRecentLog(NSUInteger lineLimit)
+{
+    __block NSString *text = @"";
+
+    dispatch_sync(SCLogQueue(), ^{
+        NSUInteger count = sRecentLogLines.count;
+        if (count > 0 && lineLimit > 0) {
+            NSUInteger first = count > lineLimit ? count - lineLimit : 0;
+            NSArray<NSString *> *lines = [sRecentLogLines subarrayWithRange:NSMakeRange(first, count - first)];
+            text = [lines componentsJoinedByString:@"\n"];
+        }
+    });
+
+    return text;
 }
 
 static NSString *SCHexString(NSData *data)
@@ -247,6 +241,12 @@ static inline uint32_t SCReadU32(const uint8_t *p)
 + (BOOL)controllerSeenBefore
 {
     return [[NSUserDefaults standardUserDefaults] boolForKey:kSeenDefaultsKey];
+}
+
+// Any queue
+- (NSString *)recentLogWithLineLimit:(NSUInteger)lineLimit
+{
+    return SCRecentLog(lineLimit);
 }
 
 - (instancetype)init

@@ -47,10 +47,6 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.moonlight-steamcontroller" "$PLIST"
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Moonlight SC" "$PLIST"
 
-          # Makes Documents/steam-controller-log.txt visible in the Files app
-          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST"
-
           mkdir -p ipa/Payload
           cp -R "$APP" ipa/Payload/
           (cd ipa && zip -qry ../Moonlight-SteamController.ipa Payload)

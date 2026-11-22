@@ -121,6 +121,10 @@ typedef struct {
 // One-line, human readable connection state for on-screen diagnostics
 @property (atomic, copy, readonly) NSString *statusDescription;
 
+// The driver's most recent log lines, oldest first, separated by newlines.
+// Empty if nothing has been logged.
+- (NSString *)recentLogWithLineLimit:(NSUInteger)lineLimit;
+
 @end
 
 NS_ASSUME_NONNULL_END
